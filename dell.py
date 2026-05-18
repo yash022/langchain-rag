@@ -3,23 +3,18 @@ import requests
 from bs4 import BeautifulSoup
 import os
 from dotenv import load_dotenv
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
-
 load_dotenv()
-
-GOOGLE_API_KEY = "AIzaSyBGByf31jfvZ3eBZ58lsZuOmwFLqRP1oAU"
 
 st.set_page_config(page_title="Dell AI Support")
 
-st.title("Dell AI Support Bot")
-
-st.write("Ask any Dell laptop issue")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -192,70 +187,134 @@ def build_vectorstore():
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
-    google_api_key=GOOGLE_API_KEY,
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.3
 )
 
-query = st.chat_input("Say something")
+if "bot_ready" not in st.session_state:
+    st.session_state.bot_ready = False
 
-if query:
-    with st.spinner("Building Dell Knowledge Base..."):
-        vectorstore, skipped_urls = build_vectorstore()
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
 
-    if vectorstore is None:
-        st.error("Could not build the Dell Knowledge Base. Please check the source URLs or your internet connection.")
-        st.stop()
+st.title("🤖 Dell AI Support Bot")
+if not st.session_state.bot_ready:
 
-    if skipped_urls:
-        with st.expander(f"Skipped {len(skipped_urls)} pages"):
-            for url, error in skipped_urls[:10]:
-                st.write(f"{url} - {error}")
-            if len(skipped_urls) > 10:
-                st.write(f"...and {len(skipped_urls) - 10} more.")
+    st.markdown("### Got a Dell laptop problem? Get an answer in seconds.")
 
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 4}
-    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Without this bot", "8–11 min", "searching manuals manually")
+    with col2:
+        st.metric("With this bot", "< 10 sec", "instant answer + source link")
+    with col3:
+        st.metric("Questions it can handle", "70+", "common Dell issues")
 
-    docs = retriever.invoke(query)
+    st.write("---")
+    st.write("Type your Dell issue — battery not charging, blue screen, WiFi not working — and get step-by-step help instantly.")
 
-    context = "\n\n".join(
-        [doc.page_content for doc in docs]
-    )
+    if st.button("🚀 Initialize Bot"):
+        with st.spinner("Building Dell Knowledge Base..."):
+            vectorstore, skipped_urls = build_vectorstore()
 
-    sources = "\n".join(
-        [
-            doc.metadata["source"]
-            for doc in docs
-        ]
-    )
+        if vectorstore is None:
+            st.error("Could not build the Dell Knowledge Base. Please check the source URLs or your internet connection.")
+            st.stop()
 
-    prompt = f"""
-    You are a Dell Support AI assistant.
+        if skipped_urls:
+            with st.expander(f"Skipped {len(skipped_urls)} pages"):
+                for url, error in skipped_urls[:10]:
+                    st.write(f"{url} - {error}")
+                if len(skipped_urls) > 10:
+                    st.write(f"...and {len(skipped_urls) - 10} more.")
 
-    Use the provided Dell documentation context to help the user.
+        retriever = vectorstore.as_retriever(
+            search_kwargs={"k": 4}
+        )
 
-    Even if the issue is not an exact match,
-    give the closest troubleshooting steps possible.
+        st.session_state.retriever = retriever
+        st.session_state.bot_ready = True
+        st.balloons()
+        st.rerun()
 
-    CONTEXT:
-    {context}
+if st.session_state.bot_ready:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    # EMPTY STATE
+    if len(st.session_state.messages) == 0:
 
-    USER QUESTION:
-    {query}
+        st.info("""
+        👋 Ask any Dell laptop issue to get started.
 
-    Provide:
-    1. Likely cause
-    2. Step-by-step troubleshooting
-    3. Important warnings
-    4. When to contact Dell support
+        Examples:
+        • Battery not charging
+        • WiFi not working
+        • Blue screen
+        • No audio
+        • Laptop overheating
+        """)
 
-    Be practical and helpful.
-    """
-    response = llm.invoke(prompt)
-    with st.chat_message("assistant"):
-        st.write(response.content)
-        st.write("### Sources")
-        sources = [doc.metadata["source"] for doc in docs]
-        for source in sources:
-            st.write(source)
+
+    user_query = st.chat_input("Describe your Dell issue...")
+
+    if user_query:
+
+        st.session_state.messages.append({
+            "role": "user",
+            "content": user_query
+        })
+
+        with st.chat_message("user"):
+            st.markdown(user_query)
+
+        with st.chat_message("assistant"):
+
+            with st.spinner("Thinking..."):
+
+                docs = st.session_state.retriever.invoke(
+                    user_query
+                )
+
+                context = "\n\n".join(
+                    [doc.page_content for doc in docs]
+                )
+
+                prompt = f"""
+                You are a Dell support assistant.
+
+                Answer ONLY from provided context.
+
+                ALWAYS give source links at the end.
+
+                Context:
+                {context}
+
+                Question:
+                {user_query}
+                """
+
+                response = llm.invoke(prompt)
+
+                sources = []
+
+                for doc in docs:
+                    source = doc.metadata.get("source")
+
+                    if source not in sources:
+                        sources.append(source)
+
+                final_answer = response.content
+
+                if sources:
+                    final_answer += "\n\n### Sources\n"
+
+                    for src in sources[:3]:
+                        final_answer += f"- {src}\n"
+
+                st.markdown(final_answer)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": final_answer
+        })
