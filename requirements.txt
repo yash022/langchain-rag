@@ -10,6 +10,7 @@ langchain-text-splitters==1.1.2
 langchain-google-genai==4.2.2
 
 google-generativeai==0.8.6
+langchain-huggingface==1.2.2
 
 faiss-cpu==1.13.2
 sentence-transformers==5.5.0
